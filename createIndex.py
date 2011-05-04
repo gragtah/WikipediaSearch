@@ -19,12 +19,11 @@ import math
 import sys
 import re
     
-K_GRAM_DB_IDENTIFIER = "KGRAMIDENTIFIER"
 CHUNK_SIZE = 100000
     
-if (len(sys.argv) != 5):
+if (len(sys.argv) != 6):
     print ""
-    print "usage: createIndex <collection> <index> <stopwords> <titleindex>"
+    print "usage: createIndex <collection> <index> <stopWords> <titleIndex> <kgramIndex>"
     print ""
     sys.exit()
 
@@ -94,30 +93,32 @@ while True:
             chunk = "<page>" + page
             break
         before, found, page = after.partition("<page>")
-collectionFile.close()    
+collectionFile.close()
+titleIndexFile.close() 
 
-# Write the index out to disk
-f = open(sys.argv[2], 'wb')
+# Write the k-gram index to disk
+kgramIndexFile = open(sys.argv[6], 'wb')
+kgramIndexFile.write(marshal.dumps(k_gram.dict))
+kgramIndexFile.close()
+
+# Write the main index out to disk
+indexFile = open(sys.argv[2], 'wb')
 term_to_file_position = {}
 for term in index.dict.keys():
-    start = f.tell()
-    f.write(marshal.dumps(index.dict[term]))
-    end = f.tell()
+    start = indexFile.tell()
+    indexFile.write(marshal.dumps(index.dict[term]))
+    end = indexFile.tell()
+    
+    # Record the byte position in the file where
+    # this term's posting list was written
     term_to_file_position[term] = (start, end)
     
+# Write the term-> byte position dictionary to the end of the file.
+start = indexFile.tell()
+indexFile.write(marshal.dumps(term_to_file_position))
+indexFile.write('\n')
 
-assert(K_GRAM_DB_IDENTIFIER not in index.dict.keys())
-start = f.tell()
-f.write(marshal.dumps(k_gram.dict))
-end = f.tell()
-term_to_file_position[K_GRAM_DB_IDENTIFIER] = (start, end)
-
-start = f.tell()
-f.write(marshal.dumps(term_to_file_position))
-f.write('\n')
-f.write(str(start))
-
-# Cleanup
-f.close()
-titleIndexFile.close()
+# Record where the term-> byte position dictionary was written.
+indexFile.write(str(start))
+indexFile.close()
 
