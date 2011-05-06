@@ -21,16 +21,17 @@ import re
     
 CHUNK_SIZE = 100000
     
-if (len(sys.argv) != 6):
+if (len(sys.argv) != 7):
     print ""
-    print "usage: createIndex <collection> <index> <stopWords> <titleIndex> <kgramIndex>"
+    print "usage: createIndex <collection> <index> <stopWords> <titleIndex> <kgramIndex> <outgoingLinks>"
     print ""
     sys.exit()
 
 # Initial setup:
 stopWordsFile = open(sys.argv[3], "r")
 collectionFile = open(sys.argv[1], "r")
-titleIndexFile = open(sys.argv[4], 'wb')
+titleIndexFile = open(sys.argv[4], 'w')
+outgoingLinksFile = open(sys.argv[6], 'w')
 stemmer = PorterStemmer()
 index = PositionalIndex()
 k_gram = KGramIndex()
@@ -43,6 +44,22 @@ stopWords = set(stopWords)
 stopWordsFile.close()
 
 def process_page(page):
+    
+    # Extract wiki links of the form [[Target_Link]].
+    # Wikipedia pages are probably related to the artciles they
+    # link to. So if the user's query contains the text of an
+    # outgoing link, we will weight this document higher.
+    links = re.compile(r'\[\[((.)*?)\]\]', re.DOTALL).findall(page)
+    for i in range(0, len(links)):
+        link = links[i][0].lower()
+        link = string.replace(link, '\|', ' ')
+        link = string.replace(link, '\#', ' ')
+        terms = re.compile(r'\b[a-z0-9]+\b').findall(link)
+        for term in terms:
+            if term not in stopWords:
+                outgoingLinksFile.write(stemmer.stem(term, 0, len(term)-1) + " ")
+    outgoingLinksFile.write('\n')
+    
     docID = re.compile(r'<id>(\d*)</id>').findall(page)[0]
     title = re.compile(r'<title>(.*?)</title>', re.DOTALL).findall(page)[0]
     text = re.compile('<text>((.)*?)</text>', re.DOTALL).findall(page)[0][0]
@@ -95,9 +112,10 @@ while True:
         before, found, page = after.partition("<page>")
 collectionFile.close()
 titleIndexFile.close() 
+outgoingLinksFile.close()
 
 # Write the k-gram index to disk
-kgramIndexFile = open(sys.argv[6], 'wb')
+kgramIndexFile = open(sys.argv[5], 'wb')
 kgramIndexFile.write(marshal.dumps(k_gram.dict))
 kgramIndexFile.close()
 

@@ -34,16 +34,16 @@ class QuerySideIndex:
             self.file.seek(int(start), 0)
             return marshal.loads(self.file.read(int(stop)-int(start)))
         
-if (len(sys.argv) != 5):
+if (len(sys.argv) != 7):
     print ""
-    print "usage: queryIndex <index> <stopwords> <titleindex> <kgramIndex>"
+    print "usage: queryIndex <index> <stopwords> <titleindex> <kgramIndex> <outgoingLinks> <pageRank>"
     print ""
     sys.exit()
 
-for i in range(1, 6):
+for i in range(1, 7):
     if not os.path.exists(sys.argv[i]):
         print ""
-        print "File " + sys.argv[1] + " does not exist."
+        print "File " + sys.argv[i] + " does not exist."
         print ""
         sys.exit()
 
@@ -56,9 +56,29 @@ term_to_file_position = marshal.loads(indexFile.read(term_to_file_position_start
 index = QuerySideIndex(indexFile, term_to_file_position)
 
 # Load the k-gram index
-kgramFile = open(sys.argv[5])
+kgramFile = open(sys.argv[4])
 k_gram = KGramIndex(marshal.loads(kgramFile.read()))
 kgramFile.close()
+
+# Load the page rank:
+pageRankFile = open(sys.argv[6])
+docIDToPageRank = {}
+currDocID = 0
+for line in pageRankFile:
+    line = line.rstrip('\n')
+    docIDToPageRank[currDocID] = float(line)
+    currDocID += 1
+pageRankFile.close()
+
+# Load the outgoing links
+outgoingLinksFile = open(sys.argv[5])
+docIDToOutgoingLinks = {}
+currDocID = 0
+for line in outgoingLinksFile:
+    line = line.rstrip('\n')
+    docIDToOutgoingLinks[currDocID] = line
+    currDocID += 1
+outgoingLinksFile.close()
 
 # Read total number of documents in collection. 
 titleIndexFile = open(sys.argv[3])
@@ -66,9 +86,9 @@ documents_in_collection = 0
 docIDToTitle = {}
 for line in titleIndexFile:
     line = line.rstrip("\n")
-    docID = line.split(" ")[0]
-    title = line.split(" ")[1]
-    docIDToTitle[docID] = title
+    docID = int(line.split(" ")[0])
+    title = " ".join(line.split(' ')[1:])
+    docIDToTitle[docID] = title.lower()
     documents_in_collection += 1
 titleIndexFile.close()
 
@@ -83,12 +103,7 @@ stopWords = set(stopWords)
 # Build the Porter Stemmer
 stemmer = PorterStemmer()
 
-def score_matching_docs(setOfDocIDs, term_to_idf):
-    # Cache term postings list to avoid hitting index.
-    term_to_postings_list = {}
-    for term in term_to_idf:
-        term_to_postings_list[term] = index.lookup(term)
-    
+def score_matching_docs(setOfDocIDs, term_to_idf, term_to_postings_list):
     scores = [0.0] * len(setOfDocIDs)
     currDoc = 0
     for docID in setOfDocIDs:
@@ -101,22 +116,83 @@ def score_matching_docs(setOfDocIDs, term_to_idf):
             result = term_to_postings_list[term]
             if result != None and docID in result:
                 weight = result[docID][-1]
-                #print weight
                 score += (weight * idf)
+                 
         scores[currDoc] = ((score, docID))
         currDoc += 1
+    
     return scores
 
 def ranked_results(setOfDocIDs, term_to_idf, num_top_docs):
-    scores = score_matching_docs(setOfDocIDs, term_to_idf)
+    # Cache term postings list to avoid hitting index.
+    term_to_postings_list = {}
+    for term in term_to_idf:
+        term_to_postings_list[term] = index.lookup(term)
+    
+    scores = score_matching_docs(setOfDocIDs, term_to_idf, term_to_postings_list)
     
     # Sorted by score, with ties broken by docID.
     scores.sort(reverse = True)
 
+    upper_bound = num_top_docs * 3 
+    # Consider three times the desired set size
+    if (len(scores) < 3 * num_top_docs):
+        upper_bound = len(scores)
+    
+    scores = [scores[i] for i in range(0, upper_bound)]
+    
+    # Find the highest score and find the highest
+    # page rank value. Scale up the page rank values
+    # to be a fraction of the tf-idf weightings.
+    max_tf_idf = 0
+    max_page_rank = 0
+    for score_tuple in scores:
+        score = score_tuple[0]
+        docID = int(score_tuple[1])
+        if score > max_tf_idf:
+            max_tf_idf = score
+        if docIDToPageRank[docID] > max_page_rank:
+            max_page_rank = docIDToPageRank[docID]
+            
+    # Avoid divide-by-zero errors
+    if max_page_rank == 0:
+        max_page_rank = 1
+        
+    page_rank_factor = max_tf_idf / max_page_rank
+    
+    for i in range(0, len(scores)):
+        docID = scores[i][1]
+        added_value = 0.0
+        for term in term_to_idf:
+            idf = term_to_idf[term]
+            tf_idf_weight = 0
+            if idf == 0:
+                # Search term does not occur in corpus
+                continue
+            result = term_to_postings_list[term]
+            if result != None and docID in result:
+                weight = result[docID][-1]
+                tf_idf_weight = weight * idf
+
+            if term in docIDToTitle[int(docID)]:
+                # If the term is in the title of the document,
+                # upweight accordingly:
+                print term + " in " + docIDToTitle[int(docID)]
+                added_value += tf_idf_weight * 4
+               
+            if term in docIDToOutgoingLinks[int(docID)]:
+                added_value += tf_idf_weight
+                
+        print "adding " + str(page_rank_factor * docIDToPageRank[int(docID)]) + " for page rank."
+        print "adding " + str(added_value) + " added value"
+        scores[i] = (scores[i][0] + page_rank_factor * docIDToPageRank[int(docID)] + added_value, scores[i][1])
+    
+    scores.sort(reverse = True)
     upper_bound = num_top_docs
     if (len(scores) < num_top_docs):
         upper_bound = len(scores)
     
+    # Return the doc IDs
     return [scores[i][1] for i in range(0, upper_bound)]
 
 def wildcard_ranked_results(matchingDocIDs, queryTermToDocIDToWildcardWeight, term_to_idf):
@@ -174,8 +250,10 @@ def wildcard_weight(docIDs, terms):
 def print_docIDs(topDocuments):
     if len(topDocuments) > 0:
         for id in topDocuments[0:-1]:
-            sys.stdout.write(id + " ")
-        sys.stdout.write(topDocuments[-1])
+            sys.stdout.write(docIDToTitle[int(id)] + ", ")
+            #sys.stdout.write(id + " ")
+        sys.stdout.write(docIDToTitle[int(topDocuments[-1])])
+        #sys.stdout.write(topDocuments[-1])
     sys.stdout.write('\n')
 
 # Print the results to stdout
@@ -262,7 +340,7 @@ def processPQ_private(keywordList, term_to_idf):
     
 def processPQ(keywordList, term_to_idf):
     successfulDocuments = processPQ_private(keywordList, term_to_idf)
-    if successfulDocument == None:
+    if successfulDocuments == None:
         sys.stdout.write('\n')
         return
     
@@ -277,15 +355,15 @@ def processPQ(keywordList, term_to_idf):
 
 def processFTQ(keywordList, term_to_idf):
 
-    ranked_results = []
+    ranked_results_list = []
     find_more_docs_count = K_TOP_DOCUMENTS
     
     # Incorporate proximity weighting. First
     # run the entire query as a phrase query.
     successfulDocuments = processPQ_private(keywordList, term_to_idf)
     if successfulDocuments != None:
-        ranked_results = ranked_results(successfulDocuments, term_to_idf, K_TOP_DOCUMENTS)
-        find_more_docs_count -= len(ranked_results)
+        ranked_results_list = ranked_results(successfulDocuments, term_to_idf, K_TOP_DOCUMENTS)
+        find_more_docs_count -= len(ranked_results_list)
         
     # TODO: If that didn't give us enough results,
     # try 4-word phrases, 3-word phrases, etc.
@@ -301,9 +379,13 @@ def processFTQ(keywordList, term_to_idf):
             if docIDToPositions != None:
                 docIDs = docIDToPositions.keys()
                 resultDocs = resultDocs.union(set(docIDs))
-        ranked_results.extend(ranked_results(resultDocs, term_to_idf, find_more_docs_count))
+        fallback_docs = (ranked_results(resultDocs, term_to_idf, K_TOP_DOCUMENTS))
+        for doc in fallback_docs:
+            if doc not in ranked_results_list and find_more_docs_count > 0:
+                ranked_results_list.append(doc)
+                find_more_docs_count -= 1
 
-    print_docIDs(ranked_results)
+    print_docIDs(ranked_results_list)
 
 # For processing boolean queries.
 # The AST generated by the TA
