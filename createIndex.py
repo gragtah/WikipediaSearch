@@ -21,17 +21,19 @@ import re
     
 CHUNK_SIZE = 100000
     
-if (len(sys.argv) != 7):
+if (len(sys.argv) != 9):
     print ""
-    print "usage: createIndex <collection> <index> <stopWords> <titleIndex> <kgramIndex> <outgoingLinks>"
+    print "usage: createIndex <collection> <index> <stopWords> <titleIndex> <kgramIndex> <outgoingLinks> <features> <vecrepOutput>"
     print ""
     sys.exit()
 
 # Initial setup:
 stopWordsFile = open(sys.argv[3], "r")
 collectionFile = open(sys.argv[1], "r")
-titleIndexFile = open(sys.argv[4], 'w')
-outgoingLinksFile = open(sys.argv[6], 'w')
+titleIndexFile = open(sys.argv[4], 'wb')
+outgoingLinksFile = open(sys.argv[6], 'wb')
+featuresFile = open(sys.argv[7], 'r')
+vecrepFile = open(sys.argv[8], 'wb')
 stemmer = PorterStemmer()
 index = PositionalIndex()
 k_gram = KGramIndex()
@@ -42,6 +44,14 @@ for stop in stopWordsFile.readlines():
     stopWords.append(word)
 stopWords = set(stopWords)
 stopWordsFile.close()
+
+features = {}
+featureID = 0
+for feature in featuresFile.readlines():
+    feature = feature.rstrip("\n")
+    features[feature] = featureID
+    featureID += 1
+featuresFile.close()
 
 def process_page(page):
     
@@ -71,9 +81,19 @@ def process_page(page):
     text = re.compile(r'\b[a-z0-9]+\b').findall(text)
     currWordNumber = 1
     term_to_occurrence_count = {}
+    feature_id_to_occurrence_count = {}
     for word in text:
         if word not in stopWords:
             keyword = stemmer.stem(word, 0, len(word)-1)
+            
+            # Now check to see if the keyword is a feature we care about:
+            if keyword in features:
+                featureID = features[keyword]
+                if featureID in feature_id_to_occurrence_count:
+                    feature_id_to_occurrence_count[featureID] += 1
+                else:
+                    feature_id_to_occurrence_count[featureID] = 1
+            
             term_to_occurrence_count[keyword] = term_to_occurrence_count.setdefault(keyword, 0) + 1
             if index.lookup(keyword) == None:
                 k_gram.insert(keyword)
@@ -89,6 +109,17 @@ def process_page(page):
         index.dict[term][docID].append(weight)
     
     titleIndexFile.write(docID + " " + title + "\n")
+    
+    # Need to write out the vector representation as
+    # d sum_d f_i:occ_i ...
+    vecrepFile.write(str(docID) + " ")
+    sum_d = 0
+    for term_count in feature_id_to_occurrence_count.values():
+        sum_d += (term_count * term_count)
+    vecrepFile.write(str(sum_d) + " ")
+    for featureID in feature_id_to_occurrence_count:
+        vecrepFile.write(str(featureID) + ":" + str(feature_id_to_occurrence_count[featureID]) + " ")
+    vecrepFile.write("\n")
 
 # Main run loop.
 # Read the collection in as chunks of data.
