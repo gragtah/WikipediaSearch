@@ -338,13 +338,81 @@ def wildcard_ranked_results(matchingDocIDs, queryTermToDocIDToWildcardWeight, te
             score += weight * term_to_idf[term]
         scores.append((score, docID))
 
+    
+    # Sorted by score, with ties broken by docID.
+    scores.sort(reverse = True)
+
+    upper_bound = K_TOP_DOCUMENTS * 3 
+    # Consider three times the desired set size
+    if (len(scores) < 3 * K_TOP_DOCUMENTS):
+        upper_bound = len(scores)
+    
+    scores = [scores[i] for i in range(0, upper_bound)]
+    
+    # Find the highest score and find the highest
+    # page rank value. Scale up the page rank values
+    # to be a fraction of the tf-idf weightings.
+    max_tf_idf = 0
+    max_page_rank = 0
+    for score_tuple in scores:
+        score = score_tuple[0]
+        docID = int(score_tuple[1])
+        if score > max_tf_idf:
+            max_tf_idf = score
+        if docIDToPageRank[docID] > max_page_rank:
+            max_page_rank = docIDToPageRank[docID]
+            
+    # Avoid divide-by-zero errors
+    if max_page_rank == 0:
+        max_page_rank = 1
+        
+    page_rank_factor = max_tf_idf / max_page_rank
+    
+    # Try to determine whether the query is specific
+    # or generic, and scale the weight of the PageRank
+    # value accordingly.
+    max_query_idf = 0
+    for term in term_to_idf:
+        if term_to_idf[term] > max_query_idf:
+            max_query_idf = term_to_idf[term]
+    if max_query_idf > 0:
+        page_rank_factor /= (0.5 * max_query_idf)
+    
+    for i in range(0, len(scores)):
+        docID = scores[i][1]
+        added_value = 0.0
+        for term in term_to_idf:
+            idf = term_to_idf[term]
+            weight = queryTermToDocIDToWildcardWeight[term][docID]
+            tf_idf_weight = weight * idf
+
+            if term in docIDToTitle[int(docID)]:
+                # If the term is in the title of the document,
+                # upweight accordingly:
+                #print term + " in " + docIDToTitle[int(docID)]
+                added_value += tf_idf_weight * 4
+               
+            if term in docIDToOutgoingLinks[int(docID)]:
+                added_value += tf_idf_weight
+                
+        # Try classifying the query and the document. If they seem to
+        # be in the same class, upweight.
+        if class_for_query(term_to_idf) == class_for_doc_ID(int(docID)):
+            #print "query and " + docIDToTitle[int(docID)] + " both in " + str(class_for_doc_ID(int(docID)))
+            added_value *= 1.2
+                
+        #print "adding " + str(page_rank_factor * docIDToPageRank[int(docID)]) + " for page rank."
+        #print "adding " + str(added_value) + " added value"
+        scores[i] = (scores[i][0] + page_rank_factor * docIDToPageRank[int(docID)] + added_value, scores[i][1])
+    
     scores.sort(reverse = True)
     upper_bound = K_TOP_DOCUMENTS
     if (len(scores) < K_TOP_DOCUMENTS):
-        upper_bound = len(scores)    
-    #return [scores[i][1] for i in range(0, len(scores))]
+        upper_bound = len(scores)
+    
+    # Return the doc IDs
     return [scores[i][1] for i in range(0, upper_bound)]
-
+    
 def wildcard_weight(docIDs, terms):
     # Cache term postings list to avoid hitting index.
     term_to_postings_list = {}
